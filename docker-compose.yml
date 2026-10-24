@@ -1,0 +1,169 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: news-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-newsuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-newspassword}
+      POSTGRES_DB: ${POSTGRES_DB:-newsdb}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-newsuser} -d ${POSTGRES_DB:-newsdb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - news-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: news-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - news-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: news-backend
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DEBUG: ${DEBUG:-True}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      BACKEND_HOST: 0.0.0.0
+      BACKEND_PORT: 8000
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173}
+      SUPABASE_DB_URL: ${SUPABASE_DB_URL:-}
+      POSTGRES_USER: ${POSTGRES_USER:-newsuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-newspassword}
+      POSTGRES_DB: ${POSTGRES_DB:-newsdb}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-newsuser}:${POSTGRES_PASSWORD:-newspassword}@postgres:5432/${POSTGRES_DB:-newsdb}}
+      DATABASE_SYNC_URL: ${DATABASE_SYNC_URL:-postgresql://${POSTGRES_USER:-newsuser}:${POSTGRES_PASSWORD:-newspassword}@postgres:5432/${POSTGRES_DB:-newsdb}}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379/0
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - news-network
+
+  collector:
+    build:
+      context: ./collector
+      dockerfile: Dockerfile
+    container_name: news-collector
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SUPABASE_DB_URL: ${SUPABASE_DB_URL:-}
+      POSTGRES_USER: ${POSTGRES_USER:-newsuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-newspassword}
+      POSTGRES_DB: ${POSTGRES_DB:-newsdb}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      DATABASE_SYNC_URL: ${DATABASE_SYNC_URL:-postgresql://${POSTGRES_USER:-newsuser}:${POSTGRES_PASSWORD:-newspassword}@postgres:5432/${POSTGRES_DB:-newsdb}}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-newsuser}:${POSTGRES_PASSWORD:-newspassword}@postgres:5432/${POSTGRES_DB:-newsdb}}
+      COLLECTION_INTERVAL_SECONDS: ${COLLECTION_INTERVAL_SECONDS:-300}
+      FEED_FETCH_TIMEOUT_SECONDS: ${FEED_FETCH_TIMEOUT_SECONDS:-15}
+      MAX_ARTICLES_PER_FEED: ${MAX_ARTICLES_PER_FEED:-30}
+    volumes:
+      - ./collector:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - news-network
+
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    container_name: news-worker
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      SUPABASE_DB_URL: ${SUPABASE_DB_URL:-}
+      POSTGRES_USER: ${POSTGRES_USER:-newsuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-newspassword}
+      POSTGRES_DB: ${POSTGRES_DB:-newsdb}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      DATABASE_SYNC_URL: ${DATABASE_SYNC_URL:-postgresql://${POSTGRES_USER:-newsuser}:${POSTGRES_PASSWORD:-newspassword}@postgres:5432/${POSTGRES_DB:-newsdb}}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-newsuser}:${POSTGRES_PASSWORD:-newspassword}@postgres:5432/${POSTGRES_DB:-newsdb}}
+      WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-5}
+      WORKER_BATCH_SIZE: ${WORKER_BATCH_SIZE:-10}
+      WORKER_MAX_RETRIES: ${WORKER_MAX_RETRIES:-3}
+      WORKER_LEASE_TIMEOUT_SECONDS: ${WORKER_LEASE_TIMEOUT_SECONDS:-300}
+    volumes:
+      - ./worker:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - news-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: news-frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+      VITE_BACKEND_INTERNAL_URL: http://backend:8000
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - news-network
+
+volumes:
+  postgres_data:
+    name: news_postgres_data
+  redis_data:
+    name: news_redis_data
+
+networks:
+  news-network:
+    name: news_network
+    driver: bridge

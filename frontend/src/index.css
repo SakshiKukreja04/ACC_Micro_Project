@@ -1,0 +1,144 @@
+@import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,400&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ==========================================================================
+   Editorial Color Palette — Light & Dark Mode Tokens
+   ========================================================================== */
+
+:root,
+[data-theme="dark"] {
+  --font-serif: 'Newsreader', Georgia, 'Times New Roman', serif;
+  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  /* Dark Mode Palette (Rich Obsidian & Slate) */
+  --bg-page: #0d1017;
+  --bg-surface: #141824;
+  --bg-surface-hover: #1b2030;
+  --bg-elevated: #1e2436;
+  --bg-glass: rgba(20, 24, 36, 0.85);
+
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --border-accent: rgba(99, 102, 241, 0.35);
+
+  --text-main: #f8fafc;
+  --text-body: #cbd5e1;
+  --text-muted: #8492a6;
+
+  /* Editorial Accents */
+  --accent-primary: #6366f1;
+  --accent-primary-hover: #4f46e5;
+  --accent-crimson: #f87171;
+  --accent-emerald: #34d399;
+  --accent-amber: #fbbf24;
+  --accent-cyan: #38bdf8;
+
+  /* AI Panel */
+  --ai-panel-bg: rgba(99, 102, 241, 0.08);
+  --ai-panel-border: rgba(99, 102, 241, 0.24);
+  --ai-panel-text: #e0e7ff;
+  --ai-badge-color: #a5b4fc;
+
+  --shadow-card: 0 4px 16px rgba(0, 0, 0, 0.35);
+  --shadow-hover: 0 8px 24px rgba(0, 0, 0, 0.5);
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-full: 9999px;
+}
+
+[data-theme="light"] {
+  /* Light Mode Palette (Warm Editorial Paper & Deep Ink) */
+  --bg-page: #f9f8f6;
+  --bg-surface: #ffffff;
+  --bg-surface-hover: #f5f4f0;
+  --bg-elevated: #f1efea;
+  --bg-glass: rgba(255, 255, 255, 0.9);
+
+  --border-subtle: #e5e2dc;
+  --border-strong: #d3cfc7;
+  --border-accent: #c7d2fe;
+
+  --text-main: #18181b;
+  --text-body: #3f3f46;
+  --text-muted: #71717a;
+
+  /* Editorial Accents */
+  --accent-primary: #4338ca;
+  --accent-primary-hover: #3730a3;
+  --accent-crimson: #b91c1c;
+  --accent-emerald: #059669;
+  --accent-amber: #d97706;
+  --accent-cyan: #0284c7;
+
+  /* AI Panel (Soft lavender/indigo paper) */
+  --ai-panel-bg: #f5f3ff;
+  --ai-panel-border: #ddd6fe;
+  --ai-panel-text: #312e81;
+  --ai-badge-color: #4f46e5;
+
+  --shadow-card: 0 2px 10px rgba(0, 0, 0, 0.06);
+  --shadow-hover: 0 6px 20px rgba(0, 0, 0, 0.1);
+}
+
+/* Base Styles */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--bg-page);
+  color: var(--text-main);
+  line-height: 1.6;
+  min-height: 100vh;
+  transition: background-color 0.25s ease, color 0.25s ease;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+input, select, textarea {
+  font-family: inherit;
+  color: inherit;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-page);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: var(--radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
