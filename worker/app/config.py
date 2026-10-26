@@ -29,6 +29,7 @@ class WorkerSettings(BaseSettings):
     WORKER_BATCH_SIZE: int = 10
     WORKER_MAX_RETRIES: int = 3
     WORKER_LEASE_TIMEOUT_SECONDS: int = 300  # 5 minutes lease before reclaiming abandoned jobs
+    WORKER_METRICS_PORT: int = 9101
 
     def get_database_url(self) -> str:
         """Resolve database URL prioritizing Supabase then DATABASE_SYNC_URL."""

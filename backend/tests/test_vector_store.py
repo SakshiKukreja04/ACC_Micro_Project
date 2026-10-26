@@ -129,6 +129,8 @@ def test_vector_store_semantic_search():
     """Verify semantic search ranks semantically related articles higher."""
     with tempfile.TemporaryDirectory() as tmpdir:
         store = VectorStoreService(storage_dir=tmpdir)
+        if store.is_fallback:
+            pytest.skip("Needs the BGE embedding model: the query shares no words with the target (lexical fallback active)")
         articles = [
             {"id": "ai-doc", "title": "Autonomous AI agents solve complex reasoning tasks", "description": "AI models automate programming workflows"},
             {"id": "food-doc", "title": "Organic farming practices produce higher yield tomatoes", "description": "Agriculture experts analyze soil nutrients"},

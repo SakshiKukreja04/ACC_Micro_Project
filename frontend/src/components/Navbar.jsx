@@ -1,6 +1,17 @@
 import React from 'react';
 
-export function Navbar({ activeTab, onSelectTab, isHealthy, theme, onToggleTheme }) {
+export const TABS = [
+  { id: 'feed', label: 'Top stories' },
+  { id: 'foryou', label: 'For you' },
+  { id: 'trending', label: 'Trending' },
+  { id: 'semantic', label: 'Discover' },
+  { id: 'chat', label: 'Ask AI' },
+  { id: 'insights', label: 'Insights' },
+  { id: 'saved', label: 'Saved' },
+  { id: 'monitor', label: 'System' },
+];
+
+export function Navbar({ activeTab, onSelectTab, isHealthy, isLive, savedCount, theme, onToggleTheme }) {
   return (
     <header className="navbar" role="banner">
       <div className="brand-wrapper">
@@ -9,64 +20,43 @@ export function Navbar({ activeTab, onSelectTab, isHealthy, theme, onToggleTheme
         </div>
         <div>
           <div className="brand-title">Nexus Newsroom</div>
-          <div className="brand-subtitle">Curated Feeds • Groq AI Summaries • FAISS Vectors</div>
+          <div className="brand-subtitle">Every source, summarised and compared</div>
         </div>
       </div>
 
-      <nav className="nav-tabs" role="navigation" aria-label="Main Sections">
-        <button
-          className={`nav-tab-btn ${activeTab === 'feed' ? 'active' : ''}`}
-          onClick={() => onSelectTab('feed')}
-          id="tab-feed"
-        >
-          Top Stories
-        </button>
-        <button
-          className={`nav-tab-btn ${activeTab === 'trending' ? 'active' : ''}`}
-          onClick={() => onSelectTab('trending')}
-          id="tab-trending"
-        >
-          Trending
-        </button>
-        <button
-          className={`nav-tab-btn ${activeTab === 'semantic' ? 'active' : ''}`}
-          onClick={() => onSelectTab('semantic')}
-          id="tab-semantic"
-        >
-          Semantic Discovery
-        </button>
-        <button
-          className={`nav-tab-btn ${activeTab === 'chat' ? 'active' : ''}`}
-          onClick={() => onSelectTab('chat')}
-          id="tab-chat"
-        >
-          Ask News AI
-        </button>
-        <button
-          className={`nav-tab-btn ${activeTab === 'cloud' ? 'active' : ''}`}
-          onClick={() => onSelectTab('cloud')}
-          id="tab-cloud"
-        >
-          Architecture
-        </button>
+      <nav className="nav-tabs" aria-label="Main sections">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            className={`nav-tab-btn ${activeTab === t.id ? 'active' : ''}`}
+            onClick={() => onSelectTab(t.id)}
+            aria-current={activeTab === t.id ? 'page' : undefined}
+            id={`tab-${t.id}`}
+          >
+            {t.label}
+            {t.id === 'saved' && savedCount > 0 && <span className="nav-count">{savedCount}</span>}
+          </button>
+        ))}
       </nav>
 
       <div className="nav-actions">
-        {/* Theme Toggle Button */}
         <button
           className="theme-toggle-btn"
           onClick={onToggleTheme}
-          title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} mode`}
-          aria-label={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} mode`}
+          aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
         >
           {theme === 'dark' ? '☀️ Light' : '🌙 Dark'}
         </button>
 
-        {/* Status Pill */}
-        <div className={`pulse-indicator ${isHealthy ? 'status-online' : 'status-offline'}`}>
+        <button
+          type="button"
+          className={`pulse-indicator ${isHealthy ? 'status-online' : 'status-offline'}`}
+          onClick={() => onSelectTab('monitor')}
+          title="Open the system monitor"
+        >
           <span className="pulse-dot"></span>
-          <span>{isHealthy ? 'Supabase Live' : 'API Connecting'}</span>
-        </div>
+          <span>{!isHealthy ? 'API offline' : isLive ? 'Live' : 'Connected'}</span>
+        </button>
       </div>
     </header>
   );

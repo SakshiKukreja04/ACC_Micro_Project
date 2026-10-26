@@ -12,6 +12,7 @@ from app.schemas.article import (
     SemanticSearchItem,
     SemanticSearchResponse,
 )
+from app.core.metrics import SEMANTIC_SEARCHES
 from app.services.vector_store import get_vector_store
 
 router = APIRouter(prefix="/search", tags=["Search"])
@@ -82,7 +83,7 @@ def search_articles(
 def semantic_search_articles(
     q: str = Query(..., min_length=2, max_length=200, description="Natural language semantic search query"),
     top_k: int = Query(10, ge=1, le=50, description="Maximum number of relevant results"),
-    min_score: float = Query(0.35, ge=0.0, le=1.0, description="Minimum cosine similarity score"),
+    min_score: Optional[float] = Query(None, ge=0.0, le=1.0, description="Minimum cosine similarity (default: calibrated)"),
     category: Optional[str] = Query(None, description="Optional category filter"),
     db: Session = Depends(get_db),
 ):
@@ -97,12 +98,14 @@ def semantic_search_articles(
             detail="Query 'q' must contain valid text",
         )
 
+    SEMANTIC_SEARCHES.inc()
     store = get_vector_store()
     # If the store is empty, sync from DB
     if store.index.ntotal == 0:
         store.sync_from_database(db)
 
-    matches = store.search(clean_q, top_k=top_k * 2 if category else top_k, min_score=min_score)
+    threshold = min_score if min_score is not None else store.threshold("search")
+    matches = store.search(clean_q, top_k=top_k * 2 if category else top_k, min_score=threshold)
     if not matches:
         return SemanticSearchResponse(query=clean_q, total=0, items=[])
 

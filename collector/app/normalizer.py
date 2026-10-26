@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import time
 from typing import Any, Dict, Optional
 from dateutil import parser as date_parser
+from app.enrichment import classify_topic, normalize_category
 from app.sources import RSSFeedSource
 
 logger = logging.getLogger("collector.normalizer")
@@ -157,10 +158,18 @@ class ArticleNormalizer:
         if not content_text:
             content_text = description
 
-        # 5. Category (use entry category or fall back to source category)
+        # 5. Category: map onto the canonical taxonomy.
+        #    Dedicated topical feeds keep their category; general feeds are classified per article
+        #    (keyword classifier over title + description, falling back to tag / source category).
         entry_tags = raw_entry.get("tags") or []
         tag_names = [t.get("term") for t in entry_tags if isinstance(t, dict) and t.get("term")]
-        category = tag_names[0] if tag_names else source.category
+        if getattr(source, "strict_category", False):
+            category = normalize_category(source.category)
+        else:
+            prior = normalize_category(tag_names[0]) if tag_names else "General"
+            if prior == "General":
+                prior = normalize_category(source.category)
+            category = classify_topic(title, f"{description} {content_text[:800]}", fallback=prior)
 
         # 6. Timestamps
         published_at = parse_datetime_to_utc(raw_entry)

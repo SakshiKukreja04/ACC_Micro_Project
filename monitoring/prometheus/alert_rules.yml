@@ -1,0 +1,106 @@
+# Alerting rules — visible at http://localhost:9090/alerts and on the Grafana dashboard.
+groups:
+  - name: availability
+    rules:
+      - alert: ServiceDown
+        expr: up{job=~"backend|worker|collector|postgres|redis"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }} is down"
+          description: "Prometheus has not been able to scrape {{ $labels.instance }} for over 1 minute."
+
+      # Workers are found via DNS discovery, so a stopped worker disappears instead of reporting up == 0
+      - alert: NoWorkerRunning
+        expr: absent(up{job="worker"} == 1)
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "No AI worker replica is running — articles will not be summarised"
+
+      - alert: DatabaseUnavailable
+        expr: news_database_up == 0
+        for: 30s
+        labels: { severity: critical }
+        annotations:
+          summary: "Backend cannot reach PostgreSQL"
+          description: "The backend /health probe reports the database as unavailable."
+
+      - alert: RedisCacheUnavailable
+        expr: news_redis_up == 0
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "Redis cache unavailable — API serving uncached"
+
+  - name: api-slo
+    rules:
+      - alert: HighApiErrorRate
+        expr: |
+          sum(rate(news_http_requests_total{status_code=~"5.."}[5m]))
+            / clamp_min(sum(rate(news_http_requests_total[5m])), 1e-9) > 0.05
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "API 5xx error rate above 5%"
+          description: "{{ $value | humanizePercentage }} of requests failed over the last 5 minutes."
+
+      - alert: HighApiLatencyP95
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(news_http_request_duration_seconds_bucket{endpoint!~"/api/chat.*|/api/briefing|/api/news/\\{article_id\\}/(perspectives|translate|summarize)"}[5m]))) > 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "p95 latency of non-LLM endpoints above 1s"
+
+  - name: pipeline
+    rules:
+      - alert: SummarizationBacklog
+        expr: news_articles_by_status{status="pending"} > 100
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "More than 100 articles waiting for AI processing"
+          description: "The worker is not keeping up; consider scaling: docker compose up -d --scale worker=3"
+
+      - alert: WorkerStalled
+        expr: time() - news_worker_last_batch_timestamp_seconds > 180
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "AI worker has not completed a polling batch for 3 minutes"
+
+      - alert: JobFailuresIncreasing
+        expr: increase(news_worker_jobs_total{outcome="failed"}[15m]) > 5
+        labels: { severity: warning }
+        annotations:
+          summary: "More than 5 articles permanently failed AI processing in 15 minutes"
+
+      - alert: CollectorStale
+        expr: time() - news_collector_last_cycle_timestamp_seconds > 900
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "No completed collection cycle in 15 minutes"
+
+      - alert: FeedSourceFailing
+        expr: increase(news_collector_feed_errors_total[30m]) >= 3
+        labels: { severity: info }
+        annotations:
+          summary: "Feed {{ $labels.source }} failed 3+ times in 30 minutes"
+
+  - name: ai-quality
+    rules:
+      - alert: LlmErrorsHigh
+        expr: sum(increase(news_llm_requests_total{outcome="error"}[10m])) > 10
+        labels: { severity: warning }
+        annotations:
+          summary: "Groq LLM returned more than 10 errors in 10 minutes (quota or outage?)"
+
+      - alert: LowSummaryGrounding
+        expr: news_summary_grounding_score_avg < 0.6 and news_summary_grounding_score_avg > 0
+        for: 30m
+        labels: { severity: info }
+        annotations:
+          summary: "Average Fact-Grounding score of AI summaries dropped below 0.6"
+          description: "Summaries may contain content not supported by the source articles."

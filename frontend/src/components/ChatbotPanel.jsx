@@ -12,7 +12,7 @@ export function ChatbotPanel() {
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
-      text: 'Welcome to the News AI Assistant! I answer questions strictly based on verified news articles stored in PostgreSQL. Ask me about recent headlines, technological advancements, or global events.',
+      text: 'Ask about anything in the collected news. I answer only from those articles and cite them, and you can ask follow-up questions.',
       sources: [],
     },
   ]);
@@ -23,12 +23,14 @@ export function ChatbotPanel() {
     const query = (questionText || input).trim();
     if (!query || loading) return;
 
+    // Previous turns (excluding the welcome message) give the model context for follow-ups
+    const history = messages.slice(1).map((m) => ({ role: m.role, content: m.text })).slice(-6);
     setMessages((prev) => [...prev, { role: 'user', text: query }]);
     if (!questionText) setInput('');
     setLoading(true);
 
     try {
-      const data = await apiService.askChatbot(query, 4);
+      const data = await apiService.askChatbot(query, 4, history);
       setMessages((prev) => [
         ...prev,
         {
@@ -59,9 +61,9 @@ export function ChatbotPanel() {
   return (
     <section className="chatbot-wrapper" aria-label="News AI Assistant">
       <div className="chatbot-header">
-        <h2 className="section-heading">News AI Retrieval Assistant</h2>
+        <h2 className="section-heading">Ask the news</h2>
         <p className="section-subheading">
-          Answers grounded strictly in collected news facts using FAISS semantic search and Groq LLM synthesis.
+          Answers come only from collected articles, found by meaning with FAISS and written by the Groq LLM, with numbered sources.
         </p>
       </div>
 
@@ -92,7 +94,7 @@ export function ChatbotPanel() {
 
               {Array.isArray(msg.sources) && msg.sources.length > 0 && (
                 <div className="chat-sources">
-                  <div className="sources-title">Referenced News Sources:</div>
+                  <div className="sources-title">Sources</div>
                   <ul className="sources-list">
                     {msg.sources.map((s, idx) => (
                       <li key={idx}>
@@ -110,7 +112,7 @@ export function ChatbotPanel() {
           {loading && (
             <div className="chat-bubble chat-assistant chat-loading">
               <span className="spinner-dot"></span>
-              <span>Retrieving relevant news context and synthesizing response...</span>
+              <span>Reading the most relevant articles…</span>
             </div>
           )}
         </div>
@@ -127,7 +129,7 @@ export function ChatbotPanel() {
             aria-label="Ask the news chatbot"
           />
           <button type="submit" className="btn-primary" disabled={loading || !input.trim()}>
-            {loading ? 'Thinking...' : 'Ask Assistant'}
+            {loading ? 'Reading…' : 'Ask'}
           </button>
         </form>
       </div>

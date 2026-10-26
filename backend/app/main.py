@@ -1,37 +1,57 @@
 import logging
-from datetime import datetime, timezone
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
+
 from app.api.api import api_router
 from app.api.endpoints.health import router as health_router
 from app.api.endpoints.metrics import router as metrics_router
 from app.core.config import settings
+from app.core.logging import configure_logging
+from app.core.metrics import PrometheusMiddleware
+from app.services.background import background_jobs
 
-# Configure logging
-logging.basicConfig(
-    level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-    format="%(asctime)s [%(levelname)s] [Backend] %(message)s",
-)
+configure_logging("backend", settings.LOG_LEVEL)
 logger = logging.getLogger("backend")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    logger.info(f"Starting {settings.PROJECT_NAME} v{settings.VERSION} ({settings.ENVIRONMENT})")
+    background_jobs.start()
+    yield
+    background_jobs.stop()
+    logger.info("Backend shutdown complete.")
+
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
-    description="Asynchronous Microservices REST API for AI-Based News Aggregator & Summarizer with Supabase PostgreSQL integration.",
+    description=(
+        "Microservices REST API for the AI-Based News Aggregator & Summarizer: news feed, FAISS semantic search, "
+        "RAG chatbot, Perspective Lens, personalised recommendations, insights, real-time events and full "
+        "Prometheus observability."
+    ),
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
+    lifespan=lifespan,
 )
 
-# CORS configuration
+# Middleware (last added = outermost): metrics wrap everything, then gzip, then CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list or ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID", "X-Process-Time"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+app.add_middleware(PrometheusMiddleware)
 
 
 # Global exception handler to prevent leaking internal stack traces or credentials
@@ -50,20 +70,29 @@ def root():
     return {
         "message": "AI-Based News Aggregator and Summarizer API is running",
         "version": settings.VERSION,
-        "database": "Supabase PostgreSQL",
         "docs": "/docs",
         "health": "/health",
+        "metrics": "/metrics",
         "endpoints": {
-            "health": "/health",
             "news_feed": "/api/news",
             "news_detail": "/api/news/{id}",
             "related_news": "/api/news/{id}/related",
+            "perspective_lens": "/api/news/{id}/perspectives",
+            "story_timeline": "/api/news/{id}/timeline",
+            "translate": "/api/news/{id}/translate?lang=hi",
             "categories": "/api/categories",
             "keyword_search": "/api/search?q={query}",
             "semantic_search": "/api/search/semantic?q={query}",
             "trending": "/api/trending",
+            "daily_briefing": "/api/briefing",
             "rag_chat": "/api/chat/ask",
             "article_explain": "/api/chat/explain/{id}",
+            "for_you": "/api/me/for-you",
+            "bookmarks": "/api/me/bookmarks",
+            "insights": "/api/insights/overview",
+            "trending_topics": "/api/insights/topics",
+            "live_events": "/api/stream/events",
+            "system_monitor": "/api/monitoring/overview",
         },
     }
 

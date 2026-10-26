@@ -24,6 +24,11 @@ class ArticleResponse(ArticleBase):
     key_takeaways: Optional[List[str] | Any] = Field(None, description="Key takeaway bullets")
     cluster_id: Optional[str] = Field(None, description="Story cluster ID for related news")
     raw_metadata: Optional[Dict[str, Any]] = Field(None, description="Raw feed metadata")
+    sentiment: Optional[str] = Field(None, description="Sentiment label: positive, neutral or negative")
+    sentiment_score: Optional[float] = Field(None, description="Sentiment compound score in [-1, 1]")
+    grounding_score: Optional[float] = Field(None, description="Fact-Grounding score of the AI summary in [0, 1]")
+    reading_time_minutes: Optional[int] = Field(None, description="Estimated reading time of the source text")
+    keywords: Optional[List[str] | Any] = Field(None, description="Extracted topic keywords")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -67,9 +72,15 @@ class SourceArticleRef(BaseModel):
     similarity_score: float = Field(..., description="Relevance score to query")
 
 
+class ChatTurn(BaseModel):
+    role: str = Field(..., pattern="^(user|assistant)$")
+    content: str = Field(..., max_length=4000)
+
+
 class ChatRequest(BaseModel):
     question: str = Field(..., min_length=2, max_length=500, description="User question to answer grounded in news")
     top_k: int = Field(4, ge=1, le=10, description="Number of context articles to retrieve")
+    history: Optional[List[ChatTurn]] = Field(None, description="Previous conversation turns for follow-up questions")
 
 
 class ChatResponse(BaseModel):

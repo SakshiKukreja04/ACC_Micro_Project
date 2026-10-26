@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "AI-Based News Aggregator & Summarizer API"
-    VERSION: str = "0.1.0"
+    VERSION: str = "1.0.0"
     ENVIRONMENT: str = "development"
     DEBUG: bool = True
     LOG_LEVEL: str = "INFO"
@@ -35,6 +35,20 @@ class Settings(BaseSettings):
     REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379
     REDIS_URL: str = "redis://redis:6379/0"
+
+    # Background vector-index maintenance
+    EMBED_SYNC_INTERVAL_SECONDS: int = 60
+    CLUSTER_INTERVAL_SECONDS: int = 300
+    ENABLE_BACKGROUND_JOBS: bool = True
+
+    # Service discovery for the in-app System Monitor (internal Docker DNS names)
+    WORKER_METRICS_URL: str = "http://worker:9101/metrics"
+    COLLECTOR_METRICS_URL: str = "http://collector:9102/metrics"
+    PROMETHEUS_INTERNAL_URL: str = "http://prometheus:9090"
+
+    # Public URLs shown as links in the dashboard (as seen from the reader's browser)
+    GRAFANA_PUBLIC_URL: str = "http://localhost:3000"
+    PROMETHEUS_PUBLIC_URL: str = "http://localhost:9090"
 
     model_config = SettingsConfigDict(
         env_file=".env",

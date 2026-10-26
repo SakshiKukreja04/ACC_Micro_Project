@@ -27,8 +27,9 @@ def get_news_feed(
     page_size: int = Query(20, ge=1, le=100, description="Items per page (max 100)"),
     category: Optional[str] = Query(None, description="Filter by topic category"),
     source: Optional[str] = Query(None, description="Filter by publisher name"),
-    status: Optional[str] = Query(None, description="Filter by processing status (pending, completed, failed)"),
+    status_filter: Optional[str] = Query(None, alias="status", description="Filter by processing status (pending, completed, failed)"),
     cluster_id: Optional[str] = Query(None, description="Filter by story cluster ID"),
+    sentiment: Optional[str] = Query(None, pattern="^(positive|neutral|negative)$", description="Filter by sentiment"),
     from_date: Optional[datetime] = Query(None, description="Filter published after this timestamp"),
     to_date: Optional[datetime] = Query(None, description="Filter published before this timestamp"),
     sort_by: str = Query("published_at", pattern="^(published_at|collected_at)$", description="Sort field"),
@@ -38,7 +39,7 @@ def get_news_feed(
     """
     Retrieve a paginated list of news articles with optional category, source, status, and date filters.
     """
-    cache_key = f"news_feed:{category}:{source}:{status}:{cluster_id}:{from_date}:{to_date}:{sort_by}:{order}:{page}:{page_size}"
+    cache_key = f"news_feed:{category}:{source}:{status_filter}:{cluster_id}:{sentiment}:{from_date}:{to_date}:{sort_by}:{order}:{page}:{page_size}"
     cached_data = cache_get(cache_key)
     if cached_data:
         return PaginatedArticlesResponse(**cached_data)
@@ -51,10 +52,12 @@ def get_news_feed(
             query = query.where(func.lower(Article.category) == category.lower().strip())
         if source:
             query = query.where(func.lower(Article.source_name) == source.lower().strip())
-        if status:
-            query = query.where(Article.processing_status == status.strip())
+        if status_filter:
+            query = query.where(Article.processing_status == status_filter.strip())
         if cluster_id:
             query = query.where(Article.cluster_id == cluster_id.strip())
+        if sentiment:
+            query = query.where(Article.sentiment == sentiment)
         if from_date:
             query = query.where(Article.published_at >= from_date)
         if to_date:
@@ -114,7 +117,7 @@ def sync_embeddings(db: Session = Depends(get_db)):
 
 @router.post("/cluster")
 def cluster_news_stories(
-    threshold: float = Query(0.80, ge=0.5, le=1.0, description="Similarity threshold for clustering"),
+    threshold: Optional[float] = Query(None, ge=0.2, le=1.0, description="Similarity threshold (default: calibrated)"),
     db: Session = Depends(get_db),
 ):
     """
@@ -123,6 +126,7 @@ def cluster_news_stories(
     """
     try:
         store = get_vector_store()
+        threshold = threshold if threshold is not None else store.threshold("cluster")
         cluster_map = store.cluster_articles(db, threshold=threshold)
         return {
             "status": "success",
@@ -182,6 +186,10 @@ def summarize_article_on_demand(
             "title": article.title,
             "summary": article.summary,
             "key_takeaways": article.key_takeaways,
+            "sentiment": article.sentiment,
+            "sentiment_score": article.sentiment_score,
+            "grounding_score": article.grounding_score,
+            "reading_time_minutes": article.reading_time_minutes,
             "cached": True,
         }
 
@@ -206,28 +214,31 @@ def summarize_article_on_demand(
             ],
         }
 
+    from app.core.redis_cache import cache_delete_pattern
+    from app.services.enrichment import enrich_article
+
     article.summary = res["summary"]
     article.key_takeaways = res["key_takeaways"]
+    enrichment = enrich_article(article.title, article.description, article.content, article.summary)
+    for field, value in enrichment.items():
+        setattr(article, field, value)
     article.processing_status = "completed"
     article.completed_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(article)
 
     # Invalidate feed cache so fresh summary appears in feeds
-    from app.core.redis_cache import get_redis_client
-    r = get_redis_client()
-    if r:
-        try:
-            for k in r.scan_iter("news_feed:*"):
-                r.delete(k)
-        except Exception:
-            pass
+    cache_delete_pattern("news_feed:*")
 
     return {
         "id": article.id,
         "title": article.title,
         "summary": article.summary,
         "key_takeaways": article.key_takeaways,
+        "sentiment": article.sentiment,
+        "sentiment_score": article.sentiment_score,
+        "grounding_score": article.grounding_score,
+        "reading_time_minutes": article.reading_time_minutes,
         "cached": False,
     }
 
@@ -236,7 +247,7 @@ def summarize_article_on_demand(
 def get_related_articles(
     article_id: str,
     top_k: int = Query(5, ge=1, le=20, description="Max number of related articles"),
-    min_score: float = Query(0.40, ge=0.0, le=1.0, description="Minimum similarity score threshold"),
+    min_score: Optional[float] = Query(None, ge=0.0, le=1.0, description="Minimum similarity (default: calibrated to the embedding model)"),
     db: Session = Depends(get_db),
 ):
     """
@@ -255,7 +266,8 @@ def get_related_articles(
     if article_id not in store.id_to_idx:
         store.add_articles([article.to_dict()])
 
-    related_matches = store.find_related(article_id, top_k=top_k, min_score=min_score)
+    threshold = min_score if min_score is not None else store.threshold("related")
+    related_matches = store.find_related(article_id, top_k=top_k, min_score=threshold)
     if not related_matches:
         return []
 

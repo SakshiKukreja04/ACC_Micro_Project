@@ -53,7 +53,9 @@ def test_normalize_valid_entries():
     assert normalized["canonical_url"] == "https://example.com/articles/quantum-breakthrough"
     assert "utm_source" not in normalized["canonical_url"]
     assert normalized["source_name"] == "Tech Test"
-    assert normalized["category"] == "Quantum"
+    # Raw feed tags ("Quantum") are mapped onto the canonical taxonomy by the topic classifier
+    assert normalized["category"] == "Technology"
+    assert "Quantum" in normalized["raw_metadata"]["tags"]
     assert "Researchers have achieved a major milestone" in normalized["description"]
     assert "Full article text explaining" in normalized["content"]
     assert normalized["processing_status"] == "pending"

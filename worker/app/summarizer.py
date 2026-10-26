@@ -24,7 +24,17 @@ class GroqSummarizerProcessor(BaseArticleProcessor):
     """
 
     DEFAULT_MODEL = "qwen/qwen3.8-27b"
-    FALLBACK_MODELS = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile"]
+    FALLBACK_MODELS = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+    _dead_models: set = set()
+
+    @staticmethod
+    def _record(model: str, outcome: str) -> None:
+        try:
+            from app.metrics import LLM_CALLS
+
+            LLM_CALLS.labels(model=model, outcome=outcome).inc()
+        except Exception:
+            pass
 
     def __init__(
         self,
@@ -33,7 +43,8 @@ class GroqSummarizerProcessor(BaseArticleProcessor):
         timeout: float = 25.0,
     ):
         self.api_key = api_key or os.getenv("GROQ_API_KEY") or ""
-        self.model = model or os.getenv("GROQ_MODEL") or self.DEFAULT_MODEL
+        configured = os.getenv("GROQ_MODELS") or os.getenv("GROQ_MODEL") or ""
+        self.model = model or (configured.split(",")[0].strip() if configured else self.DEFAULT_MODEL)
         self.timeout = timeout
         self.client = None
 
@@ -63,7 +74,7 @@ Article Text:
 Instructions:
 1. Provide a concise, neutral 2-3 sentence summary strictly based on the article above.
 2. Provide 3 to 5 key takeaway bullet points.
-3. Suggest an appropriate category if applicable.
+3. Suggest the best category from: World, Politics, Business, Technology, Science, Health, Sports, Entertainment, India, General.
 4. Do NOT hallucinate or add facts not present in the article.
 5. Return ONLY a valid JSON object matching this structure:
 {{
@@ -86,40 +97,53 @@ Instructions:
         )
 
         models_to_try = [self.model] + [m for m in self.FALLBACK_MODELS if m != self.model]
+        models_to_try = [m for m in models_to_try if m not in self._dead_models] or models_to_try
         last_error = None
 
         for model_name in models_to_try:
-            try:
-                response = self.client.chat.completions.create(
-                    model=model_name,
-                    messages=[
-                        {"role": "system", "content": system_instruction},
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=0.2,
-                    max_tokens=600,
-                    response_format={"type": "json_object"},
-                )
+            for use_json_mode in (True, False):
+                try:
+                    kwargs = dict(
+                        model=model_name,
+                        messages=[
+                            {"role": "system", "content": system_instruction},
+                            {"role": "user", "content": prompt},
+                        ],
+                        temperature=0.2,
+                        max_tokens=700,
+                    )
+                    if use_json_mode:
+                        kwargs["response_format"] = {"type": "json_object"}
+                    response = self.client.chat.completions.create(**kwargs)
 
-                raw_text = response.choices[0].message.content or "{}"
-                parsed = json.loads(raw_text)
+                    raw_text = response.choices[0].message.content or "{}"
+                    raw_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
+                    match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+                    parsed = json.loads(match.group(0) if match else raw_text)
 
-                # Validate structured output using Pydantic
-                validated = ArticleSummaryOutput.model_validate(parsed)
-
-                return {
-                    "summary": validated.summary,
-                    "key_takeaways": validated.key_takeaways,
-                    "suggested_category": validated.suggested_category,
-                }
-            except Exception as e:
-                last_error = e
-                err_str = str(e).lower()
-                if "model_not_found" in err_str or "does not exist" in err_str:
-                    logger.warning(f"Model {model_name} not available, attempting fallback...")
-                    continue
-                else:
-                    raise
+                    # Validate structured output using Pydantic
+                    validated = ArticleSummaryOutput.model_validate(parsed)
+                    self._record(model_name, "success")
+                    return {
+                        "summary": validated.summary,
+                        "key_takeaways": validated.key_takeaways,
+                        "suggested_category": validated.suggested_category,
+                        "model": model_name,
+                    }
+                except Exception as e:
+                    last_error = e
+                    err_str = str(e).lower()
+                    self._record(model_name, "error")
+                    if any(t in err_str for t in ("model_not_found", "does not exist", "decommissioned")):
+                        logger.warning(f"Model {model_name} not available, attempting fallback...")
+                        self._dead_models.add(model_name)
+                        break  # next model
+                    if "rate_limit" in err_str or "429" in err_str:
+                        raise  # let the queue retry later instead of hammering every model
+                    if use_json_mode and ("response_format" in err_str or "json" in err_str):
+                        continue  # retry same model without JSON mode
+                    logger.warning(f"Model {model_name} failed ({e}); trying next model.")
+                    break
 
         # pyrefly: ignore[bad-raise]
         raise last_error

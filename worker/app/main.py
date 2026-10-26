@@ -1,15 +1,33 @@
 import argparse
+import json
 import logging
+import os
 import signal
 import sys
-from app.config import settings
-from app.worker import BackgroundWorkerService
+from datetime import datetime, timezone
 
-logging.basicConfig(
-    level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-    format="%(asctime)s [%(levelname)s] [AI-Worker] %(message)s",
+from app.config import settings
+
+
+class _JsonFormatter(logging.Formatter):
+    def format(self, record):
+        return json.dumps({
+            "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "level": record.levelname, "service": "worker", "logger": record.name, "message": record.getMessage(),
+        })
+
+
+handler = logging.StreamHandler()
+handler.setFormatter(
+    _JsonFormatter() if os.getenv("LOG_FORMAT", "text").lower() == "json"
+    else logging.Formatter("%(asctime)s [%(levelname)s] [AI-Worker] %(message)s")
 )
+logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO), handlers=[handler])
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("worker")
+
+from app.metrics import start_metrics_server  # noqa: E402
+from app.worker import BackgroundWorkerService  # noqa: E402
 
 
 def main():
@@ -56,6 +74,7 @@ def main():
         print(f"Abandoned jobs recovered: {stats['recovered']}")
         sys.exit(0)
     else:
+        start_metrics_server(settings.WORKER_METRICS_PORT)
         logger.info("Starting background worker in continuous daemon mode...")
         service.run_daemon(poll_interval=args.interval)
 

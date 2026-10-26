@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { BookmarkButton, GroundingBadge, ReadingTime, SentimentMark } from './ui';
 
 function formatPublishedDate(dateStr) {
   if (!dateStr) return 'Recently';
@@ -23,7 +24,7 @@ function getSourceClass(sourceName) {
   return 'source-default';
 }
 
-export function NewsCard({ article, onOpenDetail, onOpenRelated, onSummaryGenerated }) {
+export function NewsCard({ article, onOpenDetail, onOpenRelated, onSummaryGenerated, isSaved, onToggleBookmark, reason }) {
   const [isSummarizing, setIsSummarizing] = useState(false);
 
   const {
@@ -36,6 +37,10 @@ export function NewsCard({ article, onOpenDetail, onOpenRelated, onSummaryGenera
     canonical_url,
     summary,
     key_takeaways,
+    sentiment,
+    sentiment_score,
+    grounding_score,
+    reading_time_minutes,
   } = article;
 
   const handleSummarizeClick = async (e) => {
@@ -64,10 +69,14 @@ export function NewsCard({ article, onOpenDetail, onOpenRelated, onSummaryGenera
             </span>
             <span className="category-tag">{category}</span>
           </div>
-          <time className="publish-time" dateTime={published_at}>
-            {formatPublishedDate(published_at)}
-          </time>
+          <div className="card-meta-right">
+            <SentimentMark sentiment={sentiment} score={sentiment_score} compact />
+            <time className="publish-time" dateTime={published_at}>
+              {formatPublishedDate(published_at)}
+            </time>
+          </div>
         </div>
+        {reason && <p className="card-reason">{reason}</p>}
 
         {/* Headline */}
         <h3 className="card-title">
@@ -89,7 +98,8 @@ export function NewsCard({ article, onOpenDetail, onOpenRelated, onSummaryGenera
         {summary ? (
           <div className="ai-summary-box">
             <div className="ai-summary-header">
-              <span className="ai-badge-label">Editorial AI Briefing</span>
+              <span className="ai-badge-label">AI briefing</span>
+              <GroundingBadge score={grounding_score} />
             </div>
             <p className="ai-summary-text">{summary}</p>
             {Array.isArray(key_takeaways) && key_takeaways.length > 0 && (
@@ -106,17 +116,17 @@ export function NewsCard({ article, onOpenDetail, onOpenRelated, onSummaryGenera
               className="btn-summarize-ondemand"
               onClick={handleSummarizeClick}
               disabled={isSummarizing}
-              title="Generate summary using Groq LLM"
+              title="Summarize this story"
             >
               {isSummarizing ? (
                 <>
                   <span className="spinner-dot"></span>
-                  <span>Summarizing with Groq...</span>
+                  <span>Summarizing…</span>
                 </>
               ) : (
                 <>
                   <span className="sparkle-icon">✨</span>
-                  <span>Generate AI Summary</span>
+                  <span>Summarize this story</span>
                 </>
               )}
             </button>
@@ -131,16 +141,18 @@ export function NewsCard({ article, onOpenDetail, onOpenRelated, onSummaryGenera
           onClick={() => onOpenDetail(article)}
           aria-label={`View full details of ${title}`}
         >
-          Read Details
+          Read
         </button>
+        <ReadingTime minutes={reading_time_minutes} />
 
         <div className="card-actions-right">
+          {onToggleBookmark && <BookmarkButton saved={isSaved} onToggle={() => onToggleBookmark(article)} size="sm" />}
           <button
             className="btn-action-ghost"
             onClick={() => onOpenRelated(article)}
-            title="Find semantically similar stories"
+            title="See how other outlets covered this story"
           >
-            🔗 Related
+            Compare
           </button>
 
           <a

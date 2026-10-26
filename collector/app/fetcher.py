@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 # pyrefly: ignore[missing-import]
 import feedparser
 import httpx
@@ -50,12 +50,26 @@ class FeedFetcher:
 
     def fetch_source_entries(self, source: RSSFeedSource) -> List[Dict[str, Any]]:
         """Fetch and return parsed entries for a single RSS source."""
+        entries, _ = self.fetch_source_with_status(source)
+        return entries
+
+    def fetch_source_with_status(self, source: RSSFeedSource) -> Tuple[List[Dict[str, Any]], bool]:
+        """Fetch + parse a feed. Returns (entries, ok) so callers can tell a failure from an empty feed."""
         logger.info(f"Fetching RSS feed from: {source.name} ({source.url})")
         raw_xml = self.fetch_feed_xml(source.url)
         if not raw_xml:
             logger.error(f"Failed to fetch content from {source.name}")
-            return []
+            return [], False
 
-        entries = self.parse_feed_content(raw_xml, source)
+        try:
+            parsed = feedparser.parse(raw_xml)
+        except Exception as e:
+            logger.warning(f"Failed to parse feed {source.name}: {e}")
+            return [], False
+        if parsed.bozo and not parsed.entries:
+            logger.warning(f"Feed {source.name} returned malformed/unparseable XML: {parsed.bozo_exception}")
+            return [], False
+
+        entries = list(parsed.entries)
         logger.info(f"Retrieved {len(entries)} raw entries from {source.name}")
-        return entries
+        return entries, True

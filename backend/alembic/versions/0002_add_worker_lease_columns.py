@@ -16,13 +16,21 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    inspector = sa.inspect(op.get_bind())
+    columns = {c["name"] for c in inspector.get_columns("articles")}
+    indexes = {i["name"] for i in inspector.get_indexes("articles")}
+
     # Add locked_at for lease-based crash recovery
-    op.add_column("articles", sa.Column("locked_at", sa.DateTime(timezone=True), nullable=True))
-    op.create_index("ix_articles_locked_at", "articles", ["locked_at"])
+    if "locked_at" not in columns:
+        op.add_column("articles", sa.Column("locked_at", sa.DateTime(timezone=True), nullable=True))
+    if "ix_articles_locked_at" not in indexes:
+        op.create_index("ix_articles_locked_at", "articles", ["locked_at"])
 
     # Add completed_at for completion tracking
-    op.add_column("articles", sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True))
-    op.create_index("ix_articles_completed_at", "articles", ["completed_at"])
+    if "completed_at" not in columns:
+        op.add_column("articles", sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True))
+    if "ix_articles_completed_at" not in indexes:
+        op.create_index("ix_articles_completed_at", "articles", ["completed_at"])
 
 
 def downgrade() -> None:

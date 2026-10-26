@@ -1,4 +1,28 @@
+# AI-Based News Aggregator & Summarizer — full microservices stack
+#
+#   docker compose up --build -d                       # app + monitoring
+#   docker compose --profile cadvisor up -d            # + per-container CPU/memory metrics
+#   docker compose up -d --scale worker=3              # horizontal scaling of the AI worker
+#
+# Endpoints: dashboard :5173 · API :8000/docs · Grafana :3000 · Prometheus :9090
+
+x-common-env: &common-env
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_FORMAT: ${LOG_FORMAT:-json}
+  SUPABASE_DB_URL: ${SUPABASE_DB_URL:-}
+  POSTGRES_USER: ${POSTGRES_USER:-newsuser}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-newspassword}
+  POSTGRES_DB: ${POSTGRES_DB:-newsdb}
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: 5432
+  DATABASE_SYNC_URL: postgresql://${POSTGRES_USER:-newsuser}:${POSTGRES_PASSWORD:-newspassword}@postgres:5432/${POSTGRES_DB:-newsdb}
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-newsuser}:${POSTGRES_PASSWORD:-newspassword}@postgres:5432/${POSTGRES_DB:-newsdb}
+  GROQ_API_KEY: ${GROQ_API_KEY:-}
+  GROQ_MODELS: ${GROQ_MODELS:-}
+
 services:
+  # ------------------------------------------------------------------ data tier
   postgres:
     image: postgres:16-alpine
     container_name: news-postgres
@@ -23,7 +47,7 @@ services:
     image: redis:7-alpine
     container_name: news-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
@@ -36,6 +60,7 @@ services:
     networks:
       - news-network
 
+  # ------------------------------------------------------------------ application tier
   backend:
     build:
       context: ./backend
@@ -43,24 +68,21 @@ services:
     container_name: news-backend
     restart: unless-stopped
     environment:
-      ENVIRONMENT: ${ENVIRONMENT:-development}
-      DEBUG: ${DEBUG:-True}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      <<: *common-env
+      DEBUG: ${DEBUG:-False}
       BACKEND_HOST: 0.0.0.0
       BACKEND_PORT: 8000
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173}
-      SUPABASE_DB_URL: ${SUPABASE_DB_URL:-}
-      POSTGRES_USER: ${POSTGRES_USER:-newsuser}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-newspassword}
-      POSTGRES_DB: ${POSTGRES_DB:-newsdb}
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-newsuser}:${POSTGRES_PASSWORD:-newspassword}@postgres:5432/${POSTGRES_DB:-newsdb}}
-      DATABASE_SYNC_URL: ${DATABASE_SYNC_URL:-postgresql://${POSTGRES_USER:-newsuser}:${POSTGRES_PASSWORD:-newspassword}@postgres:5432/${POSTGRES_DB:-newsdb}}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_URL: redis://redis:6379/0
-      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      FASTEMBED_CACHE_PATH: /app/data/models
+      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-fastembed}
+      WORKER_METRICS_URL: http://worker:9101/metrics
+      COLLECTOR_METRICS_URL: http://collector:9102/metrics
+      PROMETHEUS_INTERNAL_URL: http://prometheus:9090
+      GRAFANA_PUBLIC_URL: ${GRAFANA_PUBLIC_URL:-http://localhost:3000}
+      PROMETHEUS_PUBLIC_URL: ${PROMETHEUS_PUBLIC_URL:-http://localhost:9090}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
@@ -74,8 +96,8 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 10s
+      retries: 10
+      start_period: 30s
     networks:
       - news-network
 
@@ -86,53 +108,46 @@ services:
     container_name: news-collector
     restart: unless-stopped
     environment:
-      ENVIRONMENT: ${ENVIRONMENT:-development}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      SUPABASE_DB_URL: ${SUPABASE_DB_URL:-}
-      POSTGRES_USER: ${POSTGRES_USER:-newsuser}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-newspassword}
-      POSTGRES_DB: ${POSTGRES_DB:-newsdb}
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      DATABASE_SYNC_URL: ${DATABASE_SYNC_URL:-postgresql://${POSTGRES_USER:-newsuser}:${POSTGRES_PASSWORD:-newspassword}@postgres:5432/${POSTGRES_DB:-newsdb}}
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-newsuser}:${POSTGRES_PASSWORD:-newspassword}@postgres:5432/${POSTGRES_DB:-newsdb}}
+      <<: *common-env
       COLLECTION_INTERVAL_SECONDS: ${COLLECTION_INTERVAL_SECONDS:-300}
       FEED_FETCH_TIMEOUT_SECONDS: ${FEED_FETCH_TIMEOUT_SECONDS:-15}
-      MAX_ARTICLES_PER_FEED: ${MAX_ARTICLES_PER_FEED:-30}
+      MAX_ARTICLES_PER_FEED: ${MAX_ARTICLES_PER_FEED:-25}
+      COLLECTOR_METRICS_PORT: 9102
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-auto}
+      EXTRA_RSS_FEEDS: ${EXTRA_RSS_FEEDS:-}
+      DISABLED_RSS_FEEDS: ${DISABLED_RSS_FEEDS:-}
+      NEWSAPI_KEY: ${NEWSAPI_KEY:-}
+      GNEWS_API_KEY: ${GNEWS_API_KEY:-}
+      NEWS_API_COUNTRY: ${NEWS_API_COUNTRY:-in}
+    expose:
+      - "9102"
     volumes:
       - ./collector:/app
     depends_on:
-      postgres:
-        condition: service_healthy
+      backend:
+        condition: service_healthy   # backend applies Alembic migrations on start-up
     networks:
       - news-network
 
   worker:
+    # No container_name so the worker can be scaled: docker compose up -d --scale worker=3
     build:
       context: ./worker
       dockerfile: Dockerfile
-    container_name: news-worker
     restart: unless-stopped
     environment:
-      ENVIRONMENT: ${ENVIRONMENT:-development}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      GROQ_API_KEY: ${GROQ_API_KEY:-}
-      SUPABASE_DB_URL: ${SUPABASE_DB_URL:-}
-      POSTGRES_USER: ${POSTGRES_USER:-newsuser}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-newspassword}
-      POSTGRES_DB: ${POSTGRES_DB:-newsdb}
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      DATABASE_SYNC_URL: ${DATABASE_SYNC_URL:-postgresql://${POSTGRES_USER:-newsuser}:${POSTGRES_PASSWORD:-newspassword}@postgres:5432/${POSTGRES_DB:-newsdb}}
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-newsuser}:${POSTGRES_PASSWORD:-newspassword}@postgres:5432/${POSTGRES_DB:-newsdb}}
+      <<: *common-env
       WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-5}
       WORKER_BATCH_SIZE: ${WORKER_BATCH_SIZE:-10}
       WORKER_MAX_RETRIES: ${WORKER_MAX_RETRIES:-3}
       WORKER_LEASE_TIMEOUT_SECONDS: ${WORKER_LEASE_TIMEOUT_SECONDS:-300}
+      WORKER_METRICS_PORT: 9101
+    expose:
+      - "9101"
     volumes:
       - ./worker:/app
     depends_on:
-      postgres:
+      backend:
         condition: service_healthy
     networks:
       - news-network
@@ -144,8 +159,11 @@ services:
     container_name: news-frontend
     restart: unless-stopped
     environment:
-      VITE_API_BASE_URL: http://localhost:8000
+      # Browser calls go to /api on the Vite server, which proxies to the backend container
+      VITE_API_BASE_URL: /api
       VITE_BACKEND_INTERNAL_URL: http://backend:8000
+      VITE_GRAFANA_URL: ${GRAFANA_PUBLIC_URL:-http://localhost:3000}
+      VITE_PROMETHEUS_URL: ${PROMETHEUS_PUBLIC_URL:-http://localhost:9090}
     ports:
       - "${FRONTEND_PORT:-5173}:5173"
     volumes:
@@ -157,11 +175,102 @@ services:
     networks:
       - news-network
 
+  # ------------------------------------------------------------------ monitoring tier
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: news-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - backend
+    networks:
+      - news-network
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: news-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/news-aggregator.json
+      GF_USERS_DEFAULT_THEME: dark
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - news-network
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: news-postgres-exporter
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-newsuser}:${POSTGRES_PASSWORD:-newspassword}@postgres:5432/${POSTGRES_DB:-newsdb}?sslmode=disable
+    expose:
+      - "9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - news-network
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0
+    container_name: news-redis-exporter
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    expose:
+      - "9121"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - news-network
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: news-cadvisor
+    profiles: ["cadvisor"]
+    restart: unless-stopped
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    expose:
+      - "8080"
+    networks:
+      - news-network
+
 volumes:
   postgres_data:
     name: news_postgres_data
   redis_data:
     name: news_redis_data
+  prometheus_data:
+    name: news_prometheus_data
+  grafana_data:
+    name: news_grafana_data
 
 networks:
   news-network:

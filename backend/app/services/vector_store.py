@@ -16,25 +16,48 @@ DEFAULT_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 
 
 class FallbackEmbedder:
-    """Deterministic 384-dimensional fallback embedder in case model fails to load."""
+    """
+    Deterministic 384-dimensional lexical embedder used when the ONNX model cannot be downloaded.
+
+    Signed feature hashing over stemmed content words with sub-linear term frequency. It captures
+    lexical overlap (no semantics), which is enough for duplicate detection, clustering of stories
+    reported by several outlets and keyword-style retrieval when offline.
+    """
+
+    _word_re = None
 
     def __init__(self, dim: int = EMBEDDING_DIM):
+        import re
+
+        from app.services.enrichment import STOPWORDS
+
         self.dim = dim
+        self.stopwords = STOPWORDS
+        FallbackEmbedder._word_re = re.compile(r"[A-Za-z0-9][A-Za-z0-9\-']+")
+
+    @staticmethod
+    def _stem(word: str) -> str:
+        for suffix in ("ing", "ed", "es", "s"):
+            if len(word) > 4 and word.endswith(suffix):
+                return word[: -len(suffix)]
+        return word
 
     def embed(self, texts: List[str]):
         import hashlib
+        from collections import Counter
 
         vectors = []
         for text in texts:
             vec = np.zeros(self.dim, dtype=np.float32)
-            words = text.lower().split()
-            if not words:
-                words = ["empty"]
-            for i, word in enumerate(words):
-                h = int(hashlib.sha256(word.encode("utf-8")).hexdigest(), 16)
-                idx = h % self.dim
-                sign = 1.0 if (h % 2 == 0) else -1.0
-                vec[idx] += sign * (1.0 / (1.0 + (i * 0.05)))
+            tokens = [
+                self._stem(w.lower())
+                for w in self._word_re.findall(text or "")
+                if w.lower() not in self.stopwords and len(w) > 2
+            ] or ["empty"]
+            for tok, count in Counter(tokens).items():
+                h = int(hashlib.md5(tok.encode("utf-8")).hexdigest(), 16)
+                sign = 1.0 if (h >> 8) % 2 == 0 else -1.0
+                vec[h % self.dim] += sign * (1.0 + float(np.log(count)))
             norm = np.linalg.norm(vec)
             if norm > 1e-6:
                 vec = vec / norm
@@ -42,11 +65,20 @@ class FallbackEmbedder:
         return iter(vectors)
 
 
+# Similarity thresholds depend on the embedding space: BGE v1.5 scores related news ~0.75-0.95,
+# while the lexical fallback scores related stories ~0.3-0.7 and unrelated ones < 0.2.
+THRESHOLDS = {
+    "bge": {"related": 0.62, "lens": 0.74, "timeline": 0.70, "cluster": 0.80, "search": 0.35, "rag": 0.25, "for_you": 0.30},
+    "fallback": {"related": 0.20, "lens": 0.28, "timeline": 0.25, "cluster": 0.40, "search": 0.08, "rag": 0.08, "for_you": 0.05},
+}
+
+
 class VectorStoreService:
     """FAISS-backed vector store for semantic news search and related story clustering."""
 
     _instance: Optional["VectorStoreService"] = None
     _shared_embedder = None
+    embedder_name: str = "uninitialized"
     _singleton_lock = threading.Lock()
     _embedder_lock = threading.Lock()
 
@@ -83,14 +115,31 @@ class VectorStoreService:
         with VectorStoreService._embedder_lock:
             if VectorStoreService._shared_embedder is None:
                 try:
+                    if os.getenv("EMBEDDING_BACKEND", "fastembed").lower() == "fallback":
+                        raise RuntimeError("EMBEDDING_BACKEND=fallback requested")
                     from fastembed import TextEmbedding
 
-                    VectorStoreService._shared_embedder = TextEmbedding(model_name=DEFAULT_MODEL_NAME)
-                    logger.info(f"Loaded fastembed model: {DEFAULT_MODEL_NAME}")
+                    kwargs = {}
+                    if os.getenv("FASTEMBED_CACHE_PATH"):
+                        kwargs["cache_dir"] = os.getenv("FASTEMBED_CACHE_PATH")
+                    VectorStoreService._shared_embedder = TextEmbedding(
+                        model_name=os.getenv("EMBEDDING_MODEL", DEFAULT_MODEL_NAME), **kwargs
+                    )
+                    VectorStoreService.embedder_name = os.getenv("EMBEDDING_MODEL", DEFAULT_MODEL_NAME)
+                    logger.info(f"Loaded fastembed model: {VectorStoreService.embedder_name}")
                 except Exception as e:
                     logger.warning(f"Could not load fastembed model: {e}. Using deterministic fallback embedder.")
                     VectorStoreService._shared_embedder = FallbackEmbedder(self.dim)
+                    VectorStoreService.embedder_name = "lexical-hash-v2-384d"
             self.embedder = VectorStoreService._shared_embedder
+
+    @property
+    def is_fallback(self) -> bool:
+        return isinstance(self.embedder, FallbackEmbedder)
+
+    def threshold(self, kind: str) -> float:
+        """Calibrated similarity threshold for the active embedding model."""
+        return THRESHOLDS["fallback" if self.is_fallback else "bge"][kind]
 
     def _get_text_representation(self, title: str, description: Optional[str] = None, content: Optional[str] = None) -> str:
         """Construct representative text for semantic vectorization."""
@@ -108,9 +157,15 @@ class VectorStoreService:
         with self._lock:
             if self.index_file.exists() and self.metadata_file.exists():
                 try:
-                    loaded_index = faiss.read_index(str(self.index_file))
                     with open(self.metadata_file, "r", encoding="utf-8") as f:
                         meta = json.load(f)
+                    stored_embedder = meta.get("embedder")
+                    if stored_embedder != VectorStoreService.embedder_name:
+                        raise ValueError(
+                            f"index was built with '{stored_embedder}' but the active embedder is "
+                            f"'{VectorStoreService.embedder_name}' — rebuilding to avoid mixing vector spaces"
+                        )
+                    loaded_index = faiss.read_index(str(self.index_file))
 
                     self.index = loaded_index
                     self.id_list = meta.get("id_list", [])
@@ -118,7 +173,7 @@ class VectorStoreService:
                     logger.info(f"Loaded FAISS index with {self.index.ntotal} vectors from {self.index_file}")
                     return
                 except Exception as e:
-                    logger.error(f"Failed to load FAISS index from {self.index_file}: {e}. Reinitializing empty.")
+                    logger.warning(f"Not loading FAISS index from {self.index_file}: {e}. Reinitializing empty.")
 
             # Initialize fresh empty index
             self.index = faiss.IndexFlatIP(self.dim)
@@ -132,13 +187,13 @@ class VectorStoreService:
                 with FileLock(str(self.lock_file), timeout=5):
                     faiss.write_index(self.index, str(self.index_file))
                     with open(self.metadata_file, "w", encoding="utf-8") as f:
-                        json.dump({"id_list": self.id_list}, f, indent=2)
+                        json.dump({"id_list": self.id_list, "embedder": VectorStoreService.embedder_name}, f)
                     logger.info(f"Persisted FAISS index with {self.index.ntotal} vectors to {self.index_file}")
             except Exception as e:
                 logger.warning(f"FileLock bypassed during save: {e}. Writing directly.")
                 faiss.write_index(self.index, str(self.index_file))
                 with open(self.metadata_file, "w", encoding="utf-8") as f:
-                    json.dump({"id_list": self.id_list}, f, indent=2)
+                    json.dump({"id_list": self.id_list, "embedder": VectorStoreService.embedder_name}, f)
 
     def add_articles(self, articles: List[Dict[str, Any]]) -> int:
         """
@@ -199,19 +254,52 @@ class VectorStoreService:
             query_vec = np.array(list(fallback.embed([query.strip()])), dtype=np.float32)
 
         faiss.normalize_L2(query_vec)
+        return self.search_vector(query_vec, top_k=top_k, min_score=min_score)
 
-        k = min(top_k, self.index.ntotal)
-        scores, indices = self.index.search(query_vec, k)
+    def search_vector(
+        self, query_vec: np.ndarray, top_k: int = 5, min_score: float = 0.0, exclude: Optional[set] = None
+    ) -> List[Tuple[str, float]]:
+        """Search the index with an already-normalized (1, dim) vector."""
+        exclude = exclude or set()
+        with self._lock:
+            if self.index.ntotal == 0:
+                return []
+            k = min(top_k + len(exclude), self.index.ntotal)
+            scores, indices = self.index.search(query_vec, k)
+            id_list = list(self.id_list)
 
         results: List[Tuple[str, float]] = []
         for score, idx in zip(scores[0], indices[0]):
-            if idx < 0 or idx >= len(self.id_list):
+            if idx < 0 or idx >= len(id_list):
+                continue
+            art_id = id_list[idx]
+            if art_id in exclude:
                 continue
             cos_score = float(score)
             if cos_score >= min_score:
-                results.append((self.id_list[idx], cos_score))
-
+                results.append((art_id, cos_score))
+            if len(results) >= top_k:
+                break
         return results
+
+    def profile_vector(self, article_ids: List[str], weights: Optional[List[float]] = None) -> Optional[np.ndarray]:
+        """Build a reader interest vector: the (weighted) mean of the embeddings of articles they read."""
+        vectors, used_weights = [], []
+        with self._lock:
+            for i, art_id in enumerate(article_ids):
+                idx = self.id_to_idx.get(art_id)
+                if idx is None:
+                    continue
+                vec = np.zeros(self.dim, dtype=np.float32)
+                self.index.reconstruct(idx, vec)
+                vectors.append(vec)
+                used_weights.append(weights[i] if weights else 1.0)
+        if not vectors:
+            return None
+        profile = np.average(np.array(vectors), axis=0, weights=np.array(used_weights)).astype(np.float32)
+        profile = profile.reshape(1, -1)
+        faiss.normalize_L2(profile)
+        return profile
 
     def find_related(self, article_id: str, top_k: int = 5, min_score: float = 0.45) -> List[Tuple[str, float]]:
         """
@@ -224,13 +312,14 @@ class VectorStoreService:
         if article_id not in self.id_to_idx:
             return []
 
-        art_idx = self.id_to_idx[article_id]
-        # Reconstruct normalized vector from index
-        target_vec = np.zeros((1, self.dim), dtype=np.float32)
-        self.index.reconstruct(art_idx, target_vec[0])
+        with self._lock:
+            art_idx = self.id_to_idx[article_id]
+            # Reconstruct normalized vector from index
+            target_vec = np.zeros((1, self.dim), dtype=np.float32)
+            self.index.reconstruct(art_idx, target_vec[0])
 
-        k = min(top_k + 1, self.index.ntotal)
-        scores, indices = self.index.search(target_vec, k)
+            k = min(top_k + 1, self.index.ntotal)
+            scores, indices = self.index.search(target_vec, k)
 
         results: List[Tuple[str, float]] = []
         for score, idx in zip(scores[0], indices[0]):
@@ -255,9 +344,16 @@ class VectorStoreService:
         from app.models.article import Article
         from sqlalchemy import select
 
-        articles = db.scalars(select(Article)).all()
-        article_dicts = [a.to_dict() for a in articles]
-        return self.add_articles(article_dicts)
+        all_ids = db.scalars(select(Article.id)).all()
+        missing = [i for i in all_ids if i not in self.id_to_idx]
+        if not missing:
+            return 0
+        added = 0
+        for start in range(0, len(missing), 256):
+            chunk = missing[start : start + 256]
+            articles = db.scalars(select(Article).where(Article.id.in_(chunk))).all()
+            added += self.add_articles([a.to_dict() for a in articles])
+        return added
 
     def cluster_articles(self, db, threshold: float = 0.82) -> Dict[str, str]:
         """

@@ -17,6 +17,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # Idempotent: services may have created the table via create_all() before migrations ran
+    if sa.inspect(op.get_bind()).has_table("articles"):
+        return
     op.create_table(
         "articles",
         sa.Column("id", sa.String(length=36), nullable=False),

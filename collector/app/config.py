@@ -29,6 +29,7 @@ class CollectorSettings(BaseSettings):
     COLLECTION_INTERVAL_SECONDS: int = 300
     FEED_FETCH_TIMEOUT_SECONDS: int = 15
     MAX_ARTICLES_PER_FEED: int = 30
+    COLLECTOR_METRICS_PORT: int = 9102
     USER_AGENT: str = "NewsAggregatorBot/1.0 (+https://github.com/acc-micro-project)"
 
     def get_database_url(self) -> str:

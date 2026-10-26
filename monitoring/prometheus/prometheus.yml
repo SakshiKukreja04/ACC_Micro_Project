@@ -1,14 +1,60 @@
+# Prometheus configuration for the AI News Aggregator microservices
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+  external_labels:
+    project: ai-news-aggregator
+
+rule_files:
+  - /etc/prometheus/alert_rules.yml
 
 scrape_configs:
-  - job_name: "prometheus"
+  - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]
 
-  - job_name: "backend"
-    metrics_path: "/metrics"
+  # FastAPI backend: HTTP RED metrics, cache, Groq LLM, RAG, FAISS, pipeline & business gauges
+  - job_name: backend
+    metrics_path: /metrics
     scrape_interval: 10s
     static_configs:
       - targets: ["backend:8000"]
+        labels: { service: backend, tier: application }
+
+  # AI worker: job outcomes, durations, queue depth, grounding score.
+  # DNS service discovery scrapes *every* replica after `docker compose up -d --scale worker=N`.
+  - job_name: worker
+    dns_sd_configs:
+      - names: ["worker"]
+        type: A
+        port: 9101
+        refresh_interval: 15s
+    relabel_configs:
+      - target_label: service
+        replacement: worker
+      - target_label: tier
+        replacement: ai-processing
+
+  # RSS collector: per-source fetch / insert / error counters, cycle duration
+  - job_name: collector
+    static_configs:
+      - targets: ["collector:9102"]
+        labels: { service: collector, tier: ingestion }
+
+  # Infrastructure exporters
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+        labels: { service: postgres, tier: data }
+
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+        labels: { service: redis, tier: data }
+
+  # Container CPU / memory (only when started with: docker compose --profile cadvisor up)
+  - job_name: cadvisor
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["cadvisor:8080"]
+        labels: { service: cadvisor, tier: infrastructure }

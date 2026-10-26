@@ -70,9 +70,10 @@ class JobQueue:
                 abandoned_articles = session.scalars(stmt).all()
 
                 for art in abandoned_articles:
+                    stuck_since = art.locked_at
                     art.processing_status = "pending"
                     art.locked_at = None
-                    art.error_message = f"Recovered from abandoned lease (stuck since {art.locked_at})"
+                    art.error_message = f"Recovered from abandoned lease (stuck since {stuck_since})"
                     recovered_count += 1
 
                 session.commit()
@@ -150,12 +151,16 @@ class JobQueue:
                 art.error_message = None
 
                 if results:
-                    if "summary" in results:
-                        art.summary = results["summary"]
-                    if "key_takeaways" in results:
-                        art.key_takeaways = results["key_takeaways"]
-                    if "cluster_id" in results:
+                    for field in (
+                        "summary", "key_takeaways", "sentiment", "sentiment_score",
+                        "grounding_score", "reading_time_minutes", "keywords",
+                    ):
+                        if field in results:
+                            setattr(art, field, results[field])
+                    if results.get("cluster_id"):
                         art.cluster_id = results["cluster_id"]
+                    if results.get("category"):
+                        art.category = results["category"]
 
                 session.commit()
                 return True
@@ -163,6 +168,21 @@ class JobQueue:
                 session.rollback()
                 logger.error(f"Error marking job '{article_id}' as completed: {e}")
                 return False
+
+    def status_counts(self) -> dict:
+        """Number of articles per processing status (queue depth)."""
+        from sqlalchemy import func
+
+        counts = {"pending": 0, "processing": 0, "completed": 0, "failed": 0}
+        with self.get_session() as session:
+            try:
+                for st, cnt in session.execute(
+                    select(Article.processing_status, func.count(Article.id)).group_by(Article.processing_status)
+                ).all():
+                    counts[st] = cnt
+            except SQLAlchemyError as e:
+                logger.error(f"Error reading queue depth: {e}")
+        return counts
 
     def mark_failed(self, article_id: str, error_message: str, max_retries: int = 3) -> bool:
         """Record job failure and retry or mark permanently failed according to bounded retry policy."""

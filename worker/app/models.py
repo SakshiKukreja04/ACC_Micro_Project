@@ -6,6 +6,7 @@ from sqlalchemy import (
     Text,
     DateTime,
     Integer,
+    Float,
     JSON,
     Index,
     UniqueConstraint,
@@ -45,6 +46,11 @@ class Article(Base):
     key_takeaways = Column(JSON, nullable=True)
     cluster_id = Column(String(64), nullable=True, index=True)
     raw_metadata = Column(JSON, nullable=True)
+    sentiment = Column(String(16), nullable=True, index=True)
+    sentiment_score = Column(Float, nullable=True)
+    grounding_score = Column(Float, nullable=True)
+    reading_time_minutes = Column(Integer, nullable=True)
+    keywords = Column(JSON, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("canonical_url", name="uq_articles_canonical_url"),
